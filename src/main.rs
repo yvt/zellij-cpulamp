@@ -1,0 +1,164 @@
+//! Plugin entry point
+use num_integer::div_ceil;
+use zellij_tile::prelude::*;
+use zellij_tile_utils::style;
+
+use zellij_cpulamp::sysinfo;
+
+mod slist;
+
+struct State {
+    sysinfo: Box<dyn sysinfo::System>,
+    elapsed_since_last_frame_us: u32,
+    elapsed_since_last_measure_f: u32,
+    cpus: slist::Link<CpuState>,
+}
+
+struct CpuState {
+    charge: u32,
+    rate: u32,
+    /// Indicates whether this CPU's usage indicator is active for the current
+    /// frame.
+    lit: bool,
+}
+
+register_plugin!(State);
+
+/// The unit of time used for various operations in this plugin.
+const FRAME_INTERVAL_US: u32 = 200_000;
+
+/// The frequency of measuring the latest CPU usage, measured in [frames]
+/// (FRAME_INTERVAL_US).
+const MEASURE_INTERVAL_F: u32 = 5;
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            sysinfo: sysinfo::current_system().expect("unsupported system"),
+            // Instantly start a new frame
+            elapsed_since_last_frame_us: FRAME_INTERVAL_US,
+            // Instantly perform the first measurement
+            elapsed_since_last_measure_f: MEASURE_INTERVAL_F,
+            cpus: None,
+        }
+    }
+}
+
+impl State {
+    fn on_timeout(&mut self, elapsed_us: u64) {
+        self.elapsed_since_last_frame_us = self
+            .elapsed_since_last_frame_us
+            .saturating_add(elapsed_us.try_into().unwrap_or(u32::MAX));
+        let num_frames = self.elapsed_since_last_frame_us / FRAME_INTERVAL_US;
+        self.elapsed_since_last_frame_us -= num_frames * FRAME_INTERVAL_US;
+
+        self.elapsed_since_last_measure_f += num_frames;
+
+        if self.elapsed_since_last_measure_f >= MEASURE_INTERVAL_F {
+            self.elapsed_since_last_measure_f = 0;
+
+            // Update CPUs
+            match self.sysinfo.refresh_cpus() {
+                Ok(()) => {
+                    slist::resize_with(&mut self.cpus, self.sysinfo.num_cpus(), |_| CpuState {
+                        charge: 0,
+                        rate: 0,
+                        lit: false,
+                    });
+                    for (i, cpu) in slist::iter_mut(&mut self.cpus).enumerate() {
+                        cpu.rate = (self.sysinfo.cpu_usage(i) * u32::MAX as f64) as u32;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to update CPU statistics: {e:?}");
+                }
+            }
+        }
+
+        // The next timeout period
+        let mut timeout_f = MEASURE_INTERVAL_F - self.elapsed_since_last_measure_f;
+
+        for cpu in slist::iter_mut(&mut self.cpus) {
+            if num_frames > 0 {
+                (cpu.charge, cpu.lit) = cpu
+                    .charge
+                    .overflowing_add(cpu.rate.saturating_mul(num_frames));
+            }
+
+            // Guess the frame on which `cpu.lit` will change
+            let change_f = if cpu.lit {
+                // When will it stop overflowing?
+                let antirate = cpu.rate.wrapping_neg();
+                (cpu.charge / antirate).saturating_add(1)
+            } else {
+                // When will it overflow?
+                if cpu.rate == 0 {
+                    // Never
+                    continue;
+                }
+                let remaining_charge = cpu.charge.max(1).wrapping_neg();
+                // Rounding-up division
+                div_ceil(remaining_charge, cpu.rate)
+            };
+            timeout_f = timeout_f.min(change_f);
+        }
+
+        assert_ne!(timeout_f, 0);
+        let timeout_us = (timeout_f - 1) as u32 * FRAME_INTERVAL_US
+            + (FRAME_INTERVAL_US - self.elapsed_since_last_frame_us);
+        set_timeout(timeout_us as f64 * 1.0e-6);
+    }
+}
+
+impl ZellijPlugin for State {
+    fn load(&mut self) {
+        set_selectable(false);
+        subscribe(&[EventType::Timer]);
+        self.on_timeout(0);
+    }
+
+    fn update(&mut self, event: Event) {
+        match event {
+            Event::Timer(elapsed_secs) => {
+                self.on_timeout((elapsed_secs * 1.0e6) as u64);
+            }
+            _ => {}
+        }
+    }
+
+    fn render(&mut self, rows: usize, cols: usize) {
+        let Self { cpus, .. } = self;
+        let num_cpus = slist::iter(cpus).count();
+        let mut cpu_states = slist::iter(cpus).map(|c| c.lit);
+        let area = rows * cols;
+        if area >= num_cpus {
+            // Sparse (one cpu per cell)
+            for _ in 0..rows {
+                for _ in 0..cols {
+                    if cpu_states.next() == Some(true) {
+                        print!("•");
+                    } else {
+                        print!(" ");
+                    }
+                }
+                println!();
+            }
+        } else {
+            // Dense (8n cpus per cell)
+            let group_len = div_ceil(num_cpus, area * 8);
+            for _ in 0..rows {
+                for _ in 0..cols {
+                    let bitmap = (0..8).fold(0u8, |acc, bit| {
+                        let lit = (0..group_len)
+                            .map(|_| cpu_states.next().unwrap_or(false))
+                            .fold(false, |x, y| x | y);
+                        acc | ((lit as u8) << bit)
+                    });
+                    let braille = zellij_cpulamp::bitmap_to_braille(bitmap);
+                    print!("{braille}");
+                }
+                println!();
+            }
+        }
+    }
+}

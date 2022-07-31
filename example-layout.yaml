@@ -1,0 +1,30 @@
+template:
+  direction: Horizontal
+  parts:
+  - borderless: true
+    direction: Vertical
+    split_size:
+      Fixed: 2
+    parts:
+    - borderless: true
+      direction: Horizontal
+      run:
+        plugin:
+          location: zellij:tab-bar
+    - borderless: true
+      direction: Horizontal
+      run:
+        plugin:
+          location: file:target/wasm32-wasi/release/zellij-cpulamp.wasm
+          _allow_exec_host_cmd: true
+      split_size:
+        Fixed: 10
+  - body: true
+    direction: Vertical
+  - borderless: true
+    direction: Vertical
+    run:
+      plugin:
+        location: zellij:status-bar
+    split_size:
+      Fixed: 2
