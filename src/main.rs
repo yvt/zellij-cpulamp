@@ -1,5 +1,6 @@
 //! Plugin entry point
 use num_integer::div_ceil;
+use std::time::Instant;
 use zellij_tile::prelude::*;
 use zellij_tile_utils::style;
 
@@ -11,6 +12,7 @@ struct State {
     sysinfo: Box<dyn sysinfo::System>,
     elapsed_since_last_frame_us: u32,
     elapsed_since_last_measure_f: u32,
+    last_timeout: Instant,
     cpus: slist::Link<CpuState>,
 }
 
@@ -40,12 +42,20 @@ impl Default for State {
             // Instantly perform the first measurement
             elapsed_since_last_measure_f: MEASURE_INTERVAL_F,
             cpus: None,
+            last_timeout: Instant::now(),
         }
     }
 }
 
 impl State {
-    fn on_timeout(&mut self, elapsed_us: u64) {
+    fn on_timeout(&mut self) {
+        let now = Instant::now();
+        let elapsed_us = now
+            .checked_duration_since(self.last_timeout)
+            .map(|d| d.as_micros())
+            .unwrap_or(0);
+        self.last_timeout = now;
+
         self.elapsed_since_last_frame_us = self
             .elapsed_since_last_frame_us
             .saturating_add(elapsed_us.try_into().unwrap_or(u32::MAX));
@@ -114,13 +124,25 @@ impl ZellijPlugin for State {
     fn load(&mut self) {
         set_selectable(false);
         subscribe(&[EventType::Timer]);
-        self.on_timeout(0);
+        self.last_timeout = Instant::now();
+        self.on_timeout();
     }
 
     fn update(&mut self, event: Event) {
         match event {
-            Event::Timer(elapsed_secs) => {
-                self.on_timeout((elapsed_secs * 1.0e6) as u64);
+            Event::Timer(_elapsed_secs) => {
+                // Don't use `_elapsed_secs` because it doesn't actually
+                // represent the elapsed time since the last `Event::Timer`
+                // event.
+                //
+                // `_elapsed_secs` would actually represent the elapsed time if
+                // there were exactly one series of timeout events sustained by
+                // `set_timeout` calls in the timeout handler. In reality,
+                // however, it appears that Zellij loads two instances of this
+                // plugin (bug?), calls `load()` on both, and for some reason
+                // delivers both of the two initial timeout events only to the
+                // second instance, setting off two series of timeout events.
+                self.on_timeout();
             }
             _ => {}
         }
