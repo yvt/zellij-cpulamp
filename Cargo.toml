@@ -7,13 +7,16 @@ license = "LGPL-3.0-or-later"
 [dependencies]
 colored = "2"
 ansi_term = "0.12"
-zellij-tile = "0.30.0"
 zellij-tile-utils = "0.12.1"
 num-integer = "0.1.45"
 linux_proc = "0.1.1"
 once_cell = "1.12.0"
 getrandom = "0.2"
 anyhow = "1"
+
+[dependencies.zellij-tile]
+git = "https://github.com/zellij-org/zellij.git"
+tag = "v0.31.0"
 
 [profile.release]
 lto = true
