@@ -9,11 +9,13 @@ use zellij_cpulamp::sysinfo;
 mod slist;
 
 struct State {
+    mode_info: ModeInfo,
     sysinfo: Box<dyn sysinfo::System>,
     elapsed_since_last_frame_us: u32,
     elapsed_since_last_measure_f: u32,
     last_timeout: Instant,
     cpus: slist::Link<CpuState>,
+    output_buffer: String,
 }
 
 struct CpuState {
@@ -36,6 +38,7 @@ const MEASURE_INTERVAL_F: u32 = 5;
 impl Default for State {
     fn default() -> Self {
         Self {
+            mode_info: Default::default(),
             sysinfo: sysinfo::current_system().expect("unsupported system"),
             // Instantly start a new frame
             elapsed_since_last_frame_us: FRAME_INTERVAL_US,
@@ -43,6 +46,7 @@ impl Default for State {
             elapsed_since_last_measure_f: MEASURE_INTERVAL_F,
             cpus: None,
             last_timeout: Instant::now(),
+            output_buffer: String::new(),
         }
     }
 }
@@ -123,13 +127,14 @@ impl State {
 impl ZellijPlugin for State {
     fn load(&mut self) {
         set_selectable(false);
-        subscribe(&[EventType::Timer]);
+        subscribe(&[EventType::Timer, EventType::ModeUpdate]);
         self.last_timeout = Instant::now();
         self.on_timeout();
     }
 
     fn update(&mut self, event: Event) {
         match event {
+            Event::ModeUpdate(mode_info) => self.mode_info = mode_info,
             Event::Timer(_elapsed_secs) => {
                 // Don't use `_elapsed_secs` because it doesn't actually
                 // represent the elapsed time since the last `Event::Timer`
@@ -149,7 +154,15 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
-        let Self { cpus, .. } = self;
+        let Self {
+            cpus,
+            mode_info,
+            output_buffer,
+            ..
+        } = self;
+
+        output_buffer.clear();
+
         let num_cpus = slist::iter(cpus).count();
         let mut cpu_states = slist::iter(cpus).map(|c| c.lit);
         let area = rows * cols;
@@ -158,12 +171,12 @@ impl ZellijPlugin for State {
             for _ in 0..rows {
                 for _ in 0..cols {
                     if cpu_states.next() == Some(true) {
-                        print!("•");
+                        output_buffer.push_str("•");
                     } else {
-                        print!(" ");
+                        output_buffer.push_str(" ");
                     }
                 }
-                println!();
+                output_buffer.push_str("\n");
             }
         } else {
             // Dense (8n cpus per cell)
@@ -177,10 +190,18 @@ impl ZellijPlugin for State {
                         acc | ((lit as u8) << bit)
                     });
                     let braille = zellij_cpulamp::bitmap_to_braille(bitmap);
-                    print!("{braille}");
+                    output_buffer.push(braille);
                 }
-                println!();
+                output_buffer.push_str("\n");
             }
         }
+
+        output_buffer.pop();
+
+        let (bg, fg) = match mode_info.style.colors.theme_hue {
+            ThemeHue::Light => (mode_info.style.colors.white, mode_info.style.colors.orange),
+            ThemeHue::Dark => (mode_info.style.colors.black, mode_info.style.colors.orange),
+        };
+        print!("{}", style!(fg, bg).paint(output_buffer.as_str()));
     }
 }
