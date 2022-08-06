@@ -25,6 +25,8 @@ template:
       run:
         plugin:
           location: file:target/wasm32-wasi/release/zellij-cpulamp.wasm
+          # zellij-cpulamp needs to launch an external process to work around
+          # zellij-org/zellij#896 and get access to `/proc/stat`
           _allow_exec_host_cmd: true
       split_size:
         Fixed: 2  # show up to 8*2 cpus
