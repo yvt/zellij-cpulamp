@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
 
+use crate::iter::BoxMiniIterator;
+
 #[derive(Debug, Default)]
 pub struct System {
     cpus: Vec<Cpu>,
@@ -85,9 +87,10 @@ impl super::System for System {
         self.cpus.len()
     }
 
-    fn cpu_usage(&self, cpu_i: usize) -> f64 {
-        let cpu = &self.cpus[cpu_i];
-        let stats = cpu.stats - cpu.last_stats;
-        stats.active as f64 / stats.total as f64
+    fn iter_cpu_usage(&self) -> BoxMiniIterator<'_, f64> {
+        Box::new(self.cpus.iter().map(|cpu| {
+            let stats = cpu.stats - cpu.last_stats;
+            stats.active as f64 / stats.total as f64
+        }))
     }
 }

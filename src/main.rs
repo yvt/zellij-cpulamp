@@ -77,8 +77,10 @@ impl State {
                         rate: 0,
                         lit: false,
                     });
-                    for (i, cpu) in slist::iter_mut(&mut self.cpus).enumerate() {
-                        cpu.rate = (self.sysinfo.cpu_usage(i) * u32::MAX as f64) as u32;
+                    for (cpu, cpu_usage) in
+                        slist::iter_mut(&mut self.cpus).zip(self.sysinfo.iter_cpu_usage())
+                    {
+                        cpu.rate = (cpu_usage * u32::MAX as f64) as u32;
                     }
                 }
                 Err(e) => {

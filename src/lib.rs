@@ -1,4 +1,5 @@
 //! Utilities for the plugin
+pub mod iter;
 mod process;
 pub mod slist;
 pub mod sysinfo;
