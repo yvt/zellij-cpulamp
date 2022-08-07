@@ -20,3 +20,4 @@ tag = "v0.31.0"
 [profile.release]
 lto = true
 codegen-units = 1
+strip = true
