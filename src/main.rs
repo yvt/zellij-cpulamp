@@ -4,9 +4,7 @@ use std::time::Instant;
 use zellij_tile::prelude::*;
 use zellij_tile_utils::style;
 
-use zellij_cpulamp::sysinfo;
-
-mod slist;
+use zellij_cpulamp::{slist, sysinfo};
 
 struct State {
     mode_info: ModeInfo,

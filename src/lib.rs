@@ -1,5 +1,6 @@
 //! Utilities for the plugin
 mod process;
+pub mod slist;
 pub mod sysinfo;
 
 pub fn bitmap_to_braille(bitmap: u8) -> char {
