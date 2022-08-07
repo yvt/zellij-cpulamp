@@ -7,6 +7,7 @@
 //! [1]: https://rust.godbolt.org/z/78TnvfqYs
 
 /// A singly-linked list entry
+#[derive(Debug, Clone)]
 pub struct Entry<T> {
     pub data: T,
     pub next: Link<T>,
@@ -65,4 +66,32 @@ pub fn resize_with<T>(mut head: &mut Link<T>, len: usize, mut f: impl FnMut(usiz
 
     // Drop excessive entries
     clear(head);
+}
+
+/// Iterate through `I` while calling `mutate` for each element in `head` in a
+/// lockstep. Missing elements are created on-the-fly by `new` before calling
+/// `mutate`. Any excess elements are removed after successfully processing the
+/// first `iter.count()` elements.
+#[inline]
+pub fn try_for_each_and_resize<T, R, I: Iterator>(
+    mut head: &mut Link<T>,
+    iter: I,
+    mut new: impl FnMut(&mut I::Item) -> T,
+    mut mutate: impl FnMut(&mut T, I::Item) -> Result<(), R>,
+) -> Result<(), R> {
+    for mut i in iter {
+        let cur = head.get_or_insert_with(|| {
+            Box::new(Entry {
+                data: new(&mut i),
+                next: None,
+            })
+        });
+        mutate(&mut cur.data, i)?;
+        head = &mut cur.next;
+    }
+
+    // Drop excessive entries
+    clear(head);
+
+    Ok(())
 }

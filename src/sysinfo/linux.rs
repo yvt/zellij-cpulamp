@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 
-use crate::iter::BoxMiniIterator;
+use crate::{iter::BoxMiniIterator, slist};
 
 #[derive(Debug, Default)]
 pub struct System {
-    cpus: Vec<Cpu>,
+    cpus: slist::Link<Cpu>,
 }
 
 #[derive(Debug, Default)]
@@ -48,34 +48,36 @@ impl super::System for System {
 
         let new_num_cpus = lines.clone().count();
         anyhow::ensure!(new_num_cpus != 0, "no CPUs found");
-        self.cpus
-            .resize_with(new_num_cpus.max(self.cpus.len()), Cpu::default);
 
-        for (cpu, stat_line) in self.cpus.iter_mut().zip(lines) {
-            (|| {
-                let stat_line = stat_line.split_once(" ").context("separator is absent")?.1;
-                let mut parts = [None::<u64>; 10];
-                for (part_out, part) in parts.iter_mut().zip(stat_line.split(" ")) {
-                    *part_out = part.parse().ok();
-                }
+        slist::try_for_each_and_resize(
+            &mut self.cpus,
+            lines,
+            |_| Cpu::default(),
+            |cpu, stat_line| {
+                (|| {
+                    let stat_line = stat_line.split_once(" ").context("separator is absent")?.1;
+                    let mut parts = [None::<u64>; 10];
+                    for (part_out, part) in parts.iter_mut().zip(stat_line.split(" ")) {
+                        *part_out = part.parse().ok();
+                    }
 
-                let total: u64 = parts.iter().filter_map(|&x| x).sum();
-                let idle = parts[3].take().unwrap_or(0);
-                let iowait = parts[4].take().unwrap_or(0);
-                let idle = idle + iowait;
+                    let total: u64 = parts.iter().filter_map(|&x| x).sum();
+                    let idle = parts[3].take().unwrap_or(0);
+                    let iowait = parts[4].take().unwrap_or(0);
+                    let idle = idle + iowait;
 
-                cpu.tmp_stats = CpuStats {
-                    total,
-                    active: total.saturating_sub(idle),
-                };
-                Ok(()) as Result<()>
-            })()
-            .with_context(|| format!("failed to parse line '{stat_line}'"))?;
-        }
+                    cpu.tmp_stats = CpuStats {
+                        total,
+                        active: total.saturating_sub(idle),
+                    };
+                    Ok(()) as Result<()>
+                })()
+                .with_context(|| format!("failed to parse line '{stat_line}'"))
+            },
+        )?;
 
         // Commit the result after the success is certain
-        self.cpus.truncate(new_num_cpus);
-        for cpu in self.cpus.iter_mut() {
+        for cpu in slist::iter_mut(&mut self.cpus) {
             cpu.last_stats = cpu.stats;
             cpu.stats = cpu.tmp_stats;
         }
@@ -84,11 +86,11 @@ impl super::System for System {
     }
 
     fn num_cpus(&self) -> usize {
-        self.cpus.len()
+        slist::iter(&self.cpus).count()
     }
 
     fn iter_cpu_usage(&self) -> BoxMiniIterator<'_, f64> {
-        Box::new(self.cpus.iter().map(|cpu| {
+        Box::new(slist::iter(&self.cpus).map(|cpu| {
             let stats = cpu.stats - cpu.last_stats;
             stats.active as f64 / stats.total as f64
         }))
