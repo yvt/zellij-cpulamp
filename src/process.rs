@@ -12,7 +12,18 @@ use zellij_tile::prelude::*;
 
 pub fn spawn_and_get_output(cmd: &[u8]) -> Vec<u8> {
     let proxy = PROXY.get_or_init(|| Mutex::new(Proxy::new()));
-    proxy.lock().unwrap().spawn_and_get_output(cmd)
+    let mut proxy = proxy.lock().unwrap();
+    retry_until_success(
+        || {
+            let ret = proxy.spawn_and_get_output(cmd);
+            if let Err(ProxyExitedError) = ret {
+                *proxy = Proxy::new();
+            }
+            ret
+        },
+        Duration::from_secs(5),
+    )
+    .unwrap_or_else(|ProxyExitedError| panic!("proxy exited and failed to recover"))
 }
 
 static PROXY: OnceCell<Mutex<Proxy>> = OnceCell::new();
@@ -40,12 +51,22 @@ const PROXY_SCRIPT: &str = r#"
     trap 'rm -f $tmp/$pipe-*' exit
     mkfifo "$tmp/$pipe-res" "$tmp/$pipe-req"
 
-    while read -r line; do
-        # TODO: writing to a file on disk every time might cause wear on SSD
-        eval "$line" > "$tmp/$pipe-buf"
-        printf '!' >&3
-    done < "$tmp/$pipe-req" 3> "$tmp/$pipe-res"
+    read_timeout=5
+    # TODO: open timeout (in case the plugin gets stuck for some reason)
+
+    {
+        while read -t $read_timeout -r line; do
+            # TODO: writing to a file on disk every time might cause wear on SSD
+            eval "$line" > "$tmp/$pipe-buf"
+            printf '!' >&3
+        done
+
+        printf 'b' >&3
+    } < "$tmp/$pipe-req" 3> "$tmp/$pipe-res"
 "#;
+
+#[derive(Debug)]
+struct ProxyExitedError;
 
 impl Proxy {
     fn new() -> Self {
@@ -98,14 +119,18 @@ impl Proxy {
             retry_until_success(|| File::options().read(true).open(&pipe_res_path), timeout)
                 .unwrap_or_else(|e| panic!("failed to open '{pipe_res_path}': {e:?}"));
 
-        Self {
+        let mut this = Self {
             pipe_req,
             pipe_res,
             pipe_buf_path,
-        }
+        };
+
+        this.spawn_and_get_output(b"echo test").unwrap();
+
+        this
     }
 
-    fn spawn_and_get_output(&mut self, cmd: &[u8]) -> Vec<u8> {
+    fn spawn_and_get_output(&mut self, cmd: &[u8]) -> Result<Vec<u8>, ProxyExitedError> {
         assert!(!cmd.contains(&b'\n'));
         self.pipe_req
             .write_all(cmd)
@@ -119,12 +144,16 @@ impl Proxy {
             .read_exact(&mut buf)
             .expect("failed to read a response from a subprocess proxy");
 
-        std::fs::read(&self.pipe_buf_path).unwrap_or_else(|e| {
+        if buf[0] == b'b' {
+            return Err(ProxyExitedError);
+        }
+
+        Ok(std::fs::read(&self.pipe_buf_path).unwrap_or_else(|e| {
             panic!(
                 "failed to read a command output from '{}': {e:?}",
                 self.pipe_buf_path.display()
             )
-        })
+        }))
     }
 }
 
